@@ -41,8 +41,8 @@ ENV/
 *.pt
 *.ckpt
 
-# Data
-data/
+# Data (user data, not source code)
+/data/
 !data/.gitkeep
 
 # Outputs
