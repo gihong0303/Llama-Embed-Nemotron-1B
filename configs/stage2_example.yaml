@@ -1,0 +1,63 @@
+# Stage 2: Multi-Task Fine-Tuning Configuration
+# Based on Llama-Embed-Nemotron paper (Appendix A, Table 8)
+
+# Model
+max_length: 512
+
+# Training
+output_dir: "./outputs/stage2"
+num_epochs: 1
+batch_size: 32  # Per device
+gradient_accumulation_steps: 1
+learning_rate: 2.0e-6  # Lower than Stage 1
+weight_decay: 0.01
+warmup_ratio: 0.05  # Less warmup than Stage 1
+max_grad_norm: 1.0
+
+# Loss
+temperature: 0.02
+num_negatives: 4  # Stage 2 uses 4 hard negatives
+use_in_batch_negatives: false
+
+# Optimization
+optimizer: "adamw"
+scheduler: "cosine"
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1.0e-8
+
+# Hardware
+device: "cuda"
+fp16: true
+bf16: false
+gradient_checkpointing: true
+
+# Logging
+logging_steps: 10
+save_steps: 500
+eval_steps: 500
+save_total_limit: 3
+log_to_wandb: false
+wandb_project: "llama-embed-nemotron-1b"
+wandb_run_name: "stage2"
+
+# Data
+dataloader_num_workers: 4
+dataloader_pin_memory: true
+
+# Multi-task
+task_types: ["retrieval", "sts", "classification"]
+task_weights: [0.5, 0.3, 0.2]  # Relative weights for each task
+
+# Data paths (update these)
+train_data_paths:
+  - "data/stage2_retrieval.jsonl"
+  - "data/stage2_sts.jsonl"
+  - "data/stage2_classification.jsonl"
+
+# Load from Stage 1
+load_from_stage1: true
+stage1_checkpoint_path: "outputs/stage1/best_model"
+
+# Misc
+seed: 42

@@ -1,0 +1,196 @@
+"""
+Stage 1 Training: Retrieval Pretraining
+
+This script implements Stage 1 training from the Llama-Embed-Nemotron paper:
+- Focus on retrieval tasks
+- Use 1 hard negative per query
+- Train on ~70% of total data (retrieval-focused)
+
+Usage:
+    python scripts/train_stage1.py --train_data data/stage1_train.jsonl --output_dir outputs/stage1
+"""
+
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import argparse
+import torch
+from transformers import AutoTokenizer
+
+from src.models.embedding_model import create_embedding_model
+from src.data.dataset import EmbeddingDataset, load_jsonl, create_dataloader
+from src.training.trainer import EmbeddingTrainer
+from src.training.config import Stage1Config
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Stage 1: Retrieval Pretraining")
+
+    # Data
+    parser.add_argument("--train_data", type=str, required=True,
+                       help="Path to training data (JSONL file)")
+    parser.add_argument("--eval_data", type=str, default=None,
+                       help="Path to evaluation data (JSONL file)")
+
+    # Model
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B",
+                       help="Base model name")
+    parser.add_argument("--max_length", type=int, default=512,
+                       help="Maximum sequence length")
+
+    # Training
+    parser.add_argument("--output_dir", type=str, default="./outputs/stage1",
+                       help="Output directory")
+    parser.add_argument("--num_epochs", type=int, default=1,
+                       help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=32,
+                       help="Batch size per device")
+    parser.add_argument("--learning_rate", type=float, default=1e-5,
+                       help="Learning rate")
+    parser.add_argument("--num_negatives", type=int, default=1,
+                       help="Number of hard negatives per query")
+    parser.add_argument("--temperature", type=float, default=0.02,
+                       help="Temperature for InfoNCE loss")
+
+    # Hardware
+    parser.add_argument("--fp16", action="store_true",
+                       help="Use mixed precision training")
+    parser.add_argument("--gradient_checkpointing", action="store_true",
+                       help="Use gradient checkpointing")
+
+    # Logging
+    parser.add_argument("--logging_steps", type=int, default=10,
+                       help="Log every N steps")
+    parser.add_argument("--save_steps", type=int, default=500,
+                       help="Save checkpoint every N steps")
+    parser.add_argument("--wandb", action="store_true",
+                       help="Log to Weights & Biases")
+    parser.add_argument("--wandb_project", type=str, default="llama-embed-nemotron-1b",
+                       help="W&B project name")
+    parser.add_argument("--wandb_run_name", type=str, default=None,
+                       help="W&B run name")
+
+    # Misc
+    parser.add_argument("--seed", type=int, default=42,
+                       help="Random seed")
+    parser.add_argument("--num_workers", type=int, default=4,
+                       help="Number of data loading workers")
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # Set seed
+    torch.manual_seed(args.seed)
+
+    print("\n" + "="*80)
+    print("STAGE 1: RETRIEVAL PRETRAINING")
+    print("="*80 + "\n")
+
+    # Create config
+    config = Stage1Config(
+        model_name=args.model_name,
+        max_length=args.max_length,
+        output_dir=args.output_dir,
+        num_epochs=args.num_epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        num_negatives=args.num_negatives,
+        temperature=args.temperature,
+        fp16=args.fp16,
+        gradient_checkpointing=args.gradient_checkpointing,
+        logging_steps=args.logging_steps,
+        save_steps=args.save_steps,
+        log_to_wandb=args.wandb,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run_name or "stage1",
+        seed=args.seed,
+        dataloader_num_workers=args.num_workers,
+    )
+
+    # Save config
+    os.makedirs(config.output_dir, exist_ok=True)
+    from src.training.config import save_config
+    save_config(config, os.path.join(config.output_dir, "config.json"))
+
+    # Load tokenizer
+    print("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Load data
+    print(f"Loading training data from {args.train_data}...")
+    train_data = load_jsonl(args.train_data)
+    print(f"  Loaded {len(train_data)} training samples")
+
+    # Create dataset
+    train_dataset = EmbeddingDataset(
+        data=train_data,
+        tokenizer=tokenizer,
+        max_length=config.max_length,
+        num_negatives=config.num_negatives,
+        instruction=config.instruction,
+        task_type=config.task_type,
+    )
+
+    # Create dataloader
+    train_dataloader = create_dataloader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.dataloader_num_workers,
+    )
+
+    # Eval dataloader (optional)
+    eval_dataloader = None
+    if args.eval_data:
+        print(f"Loading evaluation data from {args.eval_data}...")
+        eval_data = load_jsonl(args.eval_data)
+        print(f"  Loaded {len(eval_data)} evaluation samples")
+
+        eval_dataset = EmbeddingDataset(
+            data=eval_data,
+            tokenizer=tokenizer,
+            max_length=config.max_length,
+            num_negatives=config.num_negatives,
+            instruction=config.instruction,
+            task_type=config.task_type,
+        )
+
+        eval_dataloader = create_dataloader(
+            eval_dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            num_workers=config.dataloader_num_workers,
+        )
+
+    # Create model
+    print(f"Creating model from {args.model_name}...")
+    model = create_embedding_model(
+        model_name=args.model_name,
+        normalize=True,
+        max_length=config.max_length,
+    )
+
+    # Create trainer
+    print("Creating trainer...")
+    trainer = EmbeddingTrainer(
+        model=model,
+        train_dataloader=train_dataloader,
+        eval_dataloader=eval_dataloader,
+        config=config,
+    )
+
+    # Train
+    print("\nStarting training...")
+    trainer.train()
+
+    print(f"\nTraining complete! Model saved to {config.output_dir}")
+
+
+if __name__ == "__main__":
+    main()
