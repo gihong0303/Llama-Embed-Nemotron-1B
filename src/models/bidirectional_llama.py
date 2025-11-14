@@ -8,7 +8,13 @@ by removing the causal attention mask, following the approach in Llama-Embed-Nem
 import torch
 import torch.nn as nn
 from transformers import LlamaModel, LlamaConfig, LlamaPreTrainedModel
-from transformers.models.llama.modeling_llama import LlamaAttention, LlamaDecoderLayer
+from transformers.models.llama.modeling_llama import (
+    LlamaAttention,
+    LlamaDecoderLayer,
+    LlamaRMSNorm,
+    apply_rotary_pos_emb,
+    repeat_kv,
+)
 from typing import Optional, Tuple, Union
 
 
@@ -125,7 +131,7 @@ class BiDirectionalLlamaModel(LlamaPreTrainedModel):
         self.layers = nn.ModuleList(
             [BiDirectionalLlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
         self.post_init()
@@ -266,33 +272,3 @@ class BiDirectionalLlamaModel(LlamaPreTrainedModel):
             layer.load_state_dict(standard_llama.layers[i].state_dict(), strict=False)
 
         return model
-
-
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    Repeat key/value tensors for grouped-query attention.
-
-    Args:
-        hidden_states: [batch, num_kv_heads, seq_len, head_dim]
-        n_rep: Number of repetitions
-
-    Returns:
-        [batch, num_kv_heads * n_rep, seq_len, head_dim]
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
-
-
-def apply_rotary_pos_emb(q, k, cos, sin):
-    """Apply rotary position embeddings."""
-    # Rotate half
-    def rotate_half(x):
-        x1, x2 = x.chunk(2, dim=-1)
-        return torch.cat((-x2, x1), dim=-1)
-
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed

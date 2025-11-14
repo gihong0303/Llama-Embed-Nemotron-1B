@@ -275,7 +275,10 @@ class LargeScaleDatasetProcessor:
             mining_model: Model for mining
             k: Number of negatives per query
         """
-        from .hard_negative_mining import HardNegativeMiner
+        try:
+            from .hard_negative_mining import HardNegativeMiner
+        except ImportError:
+            from src.data.hard_negative_mining import HardNegativeMiner
 
         print(f"Distributed hard negative mining on {input_file}...")
         print(f"  Mining model: {mining_model}")
@@ -301,7 +304,7 @@ class LargeScaleDatasetProcessor:
                 chunk.append(sample)
 
                 if len(chunk) >= self.chunk_size:
-                    # Mine for this chunk
+                            # Mine for this chunk
                     queries = [s['query'] for s in chunk]
                     positives = [s['positive'] for s in chunk]
 

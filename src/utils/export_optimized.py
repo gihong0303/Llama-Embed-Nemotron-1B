@@ -308,7 +308,9 @@ class ModelExporter:
         )
 
         # Save quantized model
-        quantized_model.save_pretrained(str(output_path))
+        output_path.mkdir(parents=True, exist_ok=True)
+        torch.save(quantized_model.state_dict(), str(output_path / "model_state_dict.pt"))
+        torch.save(quantized_model, str(output_path / "quantized_model.pt"))
 
         print(f"INT8 quantized model saved: {output_path}")
 

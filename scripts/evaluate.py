@@ -316,6 +316,10 @@ def main():
         eval_data = load_jsonl(args.eval_data)
         print(f"  Loaded {len(eval_data)} samples")
 
+        # Validate data
+        if not eval_data:
+            raise ValueError(f"Evaluation data is empty: {args.eval_data}")
+
         # Determine task type
         task_type = eval_data[0].get("task_type", "retrieval")
         print(f"  Task type: {task_type}")
