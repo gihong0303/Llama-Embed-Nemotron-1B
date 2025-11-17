@@ -26,6 +26,15 @@ from src.models.embedding_model import InstructionAwareEmbeddingModel
 from src.data.dataset import EmbeddingDataset, load_jsonl, create_dataloader, MultiTaskDataset
 from src.training.trainer import EmbeddingTrainer
 from src.training.config import Stage2Config
+from src.utils.distributed import (
+    init_distributed,
+    cleanup_distributed,
+    is_distributed,
+    is_main_process,
+    get_rank,
+    get_world_size,
+    print_rank_0,
+)
 
 
 def parse_args():
@@ -89,12 +98,25 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Set seed
-    torch.manual_seed(args.seed)
+    # Initialize distributed training (if running with torchrun/torch.distributed.launch)
+    init_distributed()
 
-    print("\n" + "="*80)
-    print("STAGE 2: MULTI-TASK FINE-TUNING")
-    print("="*80 + "\n")
+    # Set seed (different for each rank to ensure different randomness)
+    if is_distributed():
+        torch.manual_seed(args.seed + get_rank())
+    else:
+        torch.manual_seed(args.seed)
+
+    if is_main_process():
+        print("\n" + "="*80)
+        print("STAGE 2: MULTI-TASK FINE-TUNING")
+        print("="*80 + "\n")
+
+        if is_distributed():
+            print(f"Distributed training on {get_world_size()} GPUs")
+            print(f"  Batch size per GPU: {args.batch_size}")
+            print(f"  Effective batch size: {args.batch_size * get_world_size()}")
+            print()
 
     # Create config
     config = Stage2Config(
@@ -121,15 +143,16 @@ def main():
     if args.task_weights:
         config.task_weights = [float(w) for w in args.task_weights.split(",")]
 
-    # Save config
-    os.makedirs(config.output_dir, exist_ok=True)
-    from src.training.config import save_config
-    save_config(config, os.path.join(config.output_dir, "config.json"))
+    # Save config (only on main process)
+    if is_main_process():
+        os.makedirs(config.output_dir, exist_ok=True)
+        from src.training.config import save_config
+        save_config(config, os.path.join(config.output_dir, "config.json"))
 
     # Load model from Stage 1
-    print(f"Loading model from Stage 1 checkpoint: {args.stage1_checkpoint}")
+    print_rank_0(f"Loading model from Stage 1 checkpoint: {args.stage1_checkpoint}")
     model = InstructionAwareEmbeddingModel.from_pretrained(args.stage1_checkpoint)
-    print("Model loaded successfully")
+    print_rank_0("Model loaded successfully")
 
     # Get tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.stage1_checkpoint)
@@ -148,7 +171,7 @@ def main():
             tokenizer.pad_token = tokenizer.eos_token
 
     # Load data
-    print(f"Loading training data from {args.train_data}...")
+    print_rank_0(f"Loading training data from {args.train_data}...")
 
     # Support multiple data files
     if "," in args.train_data:
@@ -157,19 +180,19 @@ def main():
         for path in data_paths:
             data = load_jsonl(path.strip())
             all_data.extend(data)
-            print(f"  Loaded {len(data)} samples from {path}")
+            print_rank_0(f"  Loaded {len(data)} samples from {path}")
         train_data = all_data
     else:
         train_data = load_jsonl(args.train_data)
 
-    print(f"  Total training samples: {len(train_data)}")
+    print_rank_0(f"  Total training samples: {len(train_data)}")
 
     # Create dataset
     # Determine if multi-task or single-task based on data
     task_types = set([sample.get("task_type", "retrieval") for sample in train_data])
 
     if len(task_types) > 1:
-        print(f"  Detected multi-task data: {task_types}")
+        print_rank_0(f"  Detected multi-task data: {task_types}")
 
         # Create separate datasets for each task type
         datasets_by_task = {}
@@ -182,13 +205,13 @@ def main():
                 num_negatives=config.num_negatives,
                 task_type=task_type,
             )
-            print(f"    {task_type}: {len(task_data)} samples")
+            print_rank_0(f"    {task_type}: {len(task_data)} samples")
 
         # Combine with weights
         dataset_list = [(ds, w) for ds, w in zip(datasets_by_task.values(), config.task_weights[:len(datasets_by_task)])]
         train_dataset = MultiTaskDataset(dataset_list, sampling_strategy="proportional")
     else:
-        print(f"  Single task type: {list(task_types)[0]}")
+        print_rank_0(f"  Single task type: {list(task_types)[0]}")
         train_dataset = EmbeddingDataset(
             data=train_data,
             tokenizer=tokenizer,
@@ -196,20 +219,21 @@ def main():
             num_negatives=config.num_negatives,
         )
 
-    # Create dataloader
+    # Create dataloader with DistributedSampler if running distributed
     train_dataloader = create_dataloader(
         train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
         num_workers=config.dataloader_num_workers,
+        distributed=is_distributed(),  # Enable DistributedSampler for multi-GPU
     )
 
     # Eval dataloader (optional)
     eval_dataloader = None
     if args.eval_data:
-        print(f"Loading evaluation data from {args.eval_data}...")
+        print_rank_0(f"Loading evaluation data from {args.eval_data}...")
         eval_data = load_jsonl(args.eval_data)
-        print(f"  Loaded {len(eval_data)} evaluation samples")
+        print_rank_0(f"  Loaded {len(eval_data)} evaluation samples")
 
         eval_dataset = EmbeddingDataset(
             data=eval_data,
@@ -223,10 +247,11 @@ def main():
             batch_size=config.batch_size,
             shuffle=False,
             num_workers=config.dataloader_num_workers,
+            distributed=is_distributed(),  # Enable DistributedSampler for multi-GPU
         )
 
     # Create trainer
-    print("Creating trainer...")
+    print_rank_0("Creating trainer...")
     trainer = EmbeddingTrainer(
         model=model,
         train_dataloader=train_dataloader,
@@ -235,10 +260,14 @@ def main():
     )
 
     # Train
-    print("\nStarting training...")
+    print_rank_0("\nStarting training...")
     trainer.train()
 
-    print(f"\nTraining complete! Model saved to {config.output_dir}")
+    print_rank_0(f"\nTraining complete! Model saved to {config.output_dir}")
+
+    # Cleanup distributed training
+    if is_distributed():
+        cleanup_distributed()
 
 
 if __name__ == "__main__":

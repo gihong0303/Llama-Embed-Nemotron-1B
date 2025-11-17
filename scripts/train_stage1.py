@@ -22,6 +22,15 @@ from src.models.embedding_model import create_embedding_model
 from src.data.dataset import EmbeddingDataset, load_jsonl, create_dataloader
 from src.training.trainer import EmbeddingTrainer
 from src.training.config import Stage1Config
+from src.utils.distributed import (
+    init_distributed,
+    cleanup_distributed,
+    is_distributed,
+    is_main_process,
+    get_rank,
+    get_world_size,
+    print_rank_0,
+)
 
 
 def parse_args():
@@ -83,12 +92,25 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Set seed
-    torch.manual_seed(args.seed)
+    # Initialize distributed training (if running with torchrun/torch.distributed.launch)
+    init_distributed()
 
-    print("\n" + "="*80)
-    print("STAGE 1: RETRIEVAL PRETRAINING")
-    print("="*80 + "\n")
+    # Set seed (different for each rank to ensure different randomness)
+    if is_distributed():
+        torch.manual_seed(args.seed + get_rank())
+    else:
+        torch.manual_seed(args.seed)
+
+    if is_main_process():
+        print("\n" + "="*80)
+        print("STAGE 1: RETRIEVAL PRETRAINING")
+        print("="*80 + "\n")
+
+        if is_distributed():
+            print(f"Distributed training on {get_world_size()} GPUs")
+            print(f"  Batch size per GPU: {args.batch_size}")
+            print(f"  Effective batch size: {args.batch_size * get_world_size()}")
+            print()
 
     # Create config
     config = Stage1Config(
@@ -111,21 +133,22 @@ def main():
         dataloader_num_workers=args.num_workers,
     )
 
-    # Save config
-    os.makedirs(config.output_dir, exist_ok=True)
-    from src.training.config import save_config
-    save_config(config, os.path.join(config.output_dir, "config.json"))
+    # Save config (only on main process)
+    if is_main_process():
+        os.makedirs(config.output_dir, exist_ok=True)
+        from src.training.config import save_config
+        save_config(config, os.path.join(config.output_dir, "config.json"))
 
     # Load tokenizer
-    print("Loading tokenizer...")
+    print_rank_0("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # Load data
-    print(f"Loading training data from {args.train_data}...")
+    print_rank_0(f"Loading training data from {args.train_data}...")
     train_data = load_jsonl(args.train_data)
-    print(f"  Loaded {len(train_data)} training samples")
+    print_rank_0(f"  Loaded {len(train_data)} training samples")
 
     # Create dataset
     train_dataset = EmbeddingDataset(
@@ -137,20 +160,21 @@ def main():
         task_type=config.task_type,
     )
 
-    # Create dataloader
+    # Create dataloader with DistributedSampler if running distributed
     train_dataloader = create_dataloader(
         train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
         num_workers=config.dataloader_num_workers,
+        distributed=is_distributed(),  # Enable DistributedSampler for multi-GPU
     )
 
     # Eval dataloader (optional)
     eval_dataloader = None
     if args.eval_data:
-        print(f"Loading evaluation data from {args.eval_data}...")
+        print_rank_0(f"Loading evaluation data from {args.eval_data}...")
         eval_data = load_jsonl(args.eval_data)
-        print(f"  Loaded {len(eval_data)} evaluation samples")
+        print_rank_0(f"  Loaded {len(eval_data)} evaluation samples")
 
         eval_dataset = EmbeddingDataset(
             data=eval_data,
@@ -166,10 +190,11 @@ def main():
             batch_size=config.batch_size,
             shuffle=False,
             num_workers=config.dataloader_num_workers,
+            distributed=is_distributed(),  # Enable DistributedSampler for multi-GPU
         )
 
     # Create model
-    print(f"Creating model from {args.model_name}...")
+    print_rank_0(f"Creating model from {args.model_name}...")
     model = create_embedding_model(
         model_name=args.model_name,
         normalize=True,
@@ -177,7 +202,7 @@ def main():
     )
 
     # Create trainer
-    print("Creating trainer...")
+    print_rank_0("Creating trainer...")
     trainer = EmbeddingTrainer(
         model=model,
         train_dataloader=train_dataloader,
@@ -186,10 +211,14 @@ def main():
     )
 
     # Train
-    print("\nStarting training...")
+    print_rank_0("\nStarting training...")
     trainer.train()
 
-    print(f"\nTraining complete! Model saved to {config.output_dir}")
+    print_rank_0(f"\nTraining complete! Model saved to {config.output_dir}")
+
+    # Cleanup distributed training
+    if is_distributed():
+        cleanup_distributed()
 
 
 if __name__ == "__main__":

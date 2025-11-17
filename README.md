@@ -127,6 +127,7 @@ data_with_negatives = miner.mine_batched(
 
 ### 4. Stage 1 Training
 
+**Single GPU:**
 ```bash
 python scripts/train_stage1.py \
     --train_data data/stage1_train.jsonl \
@@ -138,14 +139,43 @@ python scripts/train_stage1.py \
     --gradient_checkpointing
 ```
 
+**Multi-GPU (8 GPUs - Recommended):**
+```bash
+bash scripts/launch_ddp_stage1.sh \
+    --train_data data/stage1_train.jsonl \
+    --output_dir outputs/stage1 \
+    --batch_size 16 \
+    --learning_rate 1e-5 \
+    --num_negatives 1 \
+    --fp16 \
+    --gradient_checkpointing
+```
+
+> 💡 **Note**: When using 8 GPUs, reduce `batch_size` per GPU to 16. Effective batch size = 16 × 8 = 128.
+> See [DDP_SETUP.md](DDP_SETUP.md) for detailed multi-GPU training guide.
+
 ### 5. Stage 2 Training
 
+**Single GPU:**
 ```bash
 python scripts/train_stage2.py \
     --stage1_checkpoint outputs/stage1/best_model \
     --train_data data/stage2_train.jsonl \
     --output_dir outputs/stage2 \
     --batch_size 32 \
+    --learning_rate 2e-6 \
+    --num_negatives 4 \
+    --fp16 \
+    --gradient_checkpointing
+```
+
+**Multi-GPU (8 GPUs - Recommended):**
+```bash
+bash scripts/launch_ddp_stage2.sh \
+    --stage1_checkpoint outputs/stage1/best_model \
+    --train_data data/stage2_train.jsonl \
+    --output_dir outputs/stage2 \
+    --batch_size 8 \
     --learning_rate 2e-6 \
     --num_negatives 4 \
     --fp16 \
