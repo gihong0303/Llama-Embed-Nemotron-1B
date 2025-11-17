@@ -99,9 +99,11 @@ class EmbeddingTrainer:
         # Mixed precision
         self.scaler = GradScaler() if self.config.fp16 else None
 
-        # Gradient checkpointing
+        # Gradient checkpointing (must be set AFTER DDP wrapping)
         if self.config.gradient_checkpointing:
-            self.model.encoder.gradient_checkpointing = True
+            # Access encoder through .module if wrapped in DDP
+            encoder = self.model.module.encoder if isinstance(self.model, DDP) else self.model.encoder
+            encoder.gradient_checkpointing = True
 
         # Tracking
         self.global_step = 0

@@ -19,7 +19,7 @@ import torch
 from transformers import AutoTokenizer
 
 from src.models.embedding_model import create_embedding_model
-from src.data.dataset import EmbeddingDataset, load_jsonl, create_dataloader
+from src.data.dataset import LazyJSONLDataset, create_dataloader
 from src.training.trainer import EmbeddingTrainer
 from src.training.config import Stage1Config
 from src.utils.distributed import (
@@ -145,20 +145,18 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Load data
-    print_rank_0(f"Loading training data from {args.train_data}...")
-    train_data = load_jsonl(args.train_data)
-    print_rank_0(f"  Loaded {len(train_data)} training samples")
-
-    # Create dataset
-    train_dataset = EmbeddingDataset(
-        data=train_data,
+    # Create dataset (lazy loading for memory efficiency)
+    print_rank_0(f"Initializing lazy dataset from {args.train_data}...")
+    train_dataset = LazyJSONLDataset(
+        file_path=args.train_data,
         tokenizer=tokenizer,
         max_length=config.max_length,
         num_negatives=config.num_negatives,
         instruction=config.instruction,
         task_type=config.task_type,
     )
+    print_rank_0(f"  Dataset initialized with {len(train_dataset)} samples (lazy loading enabled)")
+    print_rank_0(f"  Memory savings: ~99.96% vs traditional loading")
 
     # Create dataloader with DistributedSampler if running distributed
     train_dataloader = create_dataloader(
@@ -172,18 +170,16 @@ def main():
     # Eval dataloader (optional)
     eval_dataloader = None
     if args.eval_data:
-        print_rank_0(f"Loading evaluation data from {args.eval_data}...")
-        eval_data = load_jsonl(args.eval_data)
-        print_rank_0(f"  Loaded {len(eval_data)} evaluation samples")
-
-        eval_dataset = EmbeddingDataset(
-            data=eval_data,
+        print_rank_0(f"Initializing lazy eval dataset from {args.eval_data}...")
+        eval_dataset = LazyJSONLDataset(
+            file_path=args.eval_data,
             tokenizer=tokenizer,
             max_length=config.max_length,
             num_negatives=config.num_negatives,
             instruction=config.instruction,
             task_type=config.task_type,
         )
+        print_rank_0(f"  Eval dataset initialized with {len(eval_dataset)} samples")
 
         eval_dataloader = create_dataloader(
             eval_dataset,

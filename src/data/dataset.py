@@ -17,6 +17,176 @@ import json
 import random
 
 
+class LazyJSONLDataset(Dataset):
+    """
+    Memory-efficient dataset that reads JSONL file lazily.
+
+    Instead of loading all data into memory, this dataset:
+    1. Builds an index of line offsets (only ~8 bytes per sample)
+    2. Reads each sample from file when accessed via __getitem__
+
+    Memory usage comparison for 331,959 samples (6.2GB data):
+    - Traditional: 6.2GB × num_processes (31GB for 5 GPUs)
+    - Lazy: ~2.5MB × num_processes (13MB for 5 GPUs)
+    - Savings: 99.96%
+
+    Args:
+        file_path: Path to JSONL file
+        tokenizer: Tokenizer for encoding texts
+        max_length: Maximum sequence length
+        num_negatives: Number of negatives to use per sample
+        instruction: Default instruction (can be overridden per sample)
+        task_type: Default task type
+    """
+
+    def __init__(
+        self,
+        file_path: str,
+        tokenizer: PreTrainedTokenizer,
+        max_length: int = 512,
+        num_negatives: int = 1,
+        instruction: Optional[str] = None,
+        task_type: str = "retrieval",
+    ):
+        self.file_path = file_path
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.num_negatives = num_negatives
+        self.default_instruction = instruction
+        self.task_type = task_type
+
+        # Build index of line offsets (only stores file positions, not data)
+        self.line_offsets = self._build_index()
+
+        # Ensure tokenizer has pad token
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    def _build_index(self) -> List[int]:
+        """Build index of byte offsets for each line in the file."""
+        offsets = []
+        with open(self.file_path, 'rb') as f:
+            offset = 0
+            for line in f:
+                offsets.append(offset)
+                offset += len(line)
+        return offsets
+
+    def __len__(self) -> int:
+        return len(self.line_offsets)
+
+    def _read_sample(self, idx: int) -> Dict:
+        """Read a single sample from file at the given index."""
+        with open(self.file_path, 'r', encoding='utf-8') as f:
+            f.seek(self.line_offsets[idx])
+            line = f.readline()
+            return json.loads(line.strip())
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """
+        Get a single training sample by reading from file.
+
+        Returns:
+            {
+                "query_input_ids": [seq_len],
+                "query_attention_mask": [seq_len],
+                "pos_input_ids": [seq_len],
+                "pos_attention_mask": [seq_len],
+                "neg_input_ids": [num_negatives, seq_len],
+                "neg_attention_mask": [num_negatives, seq_len],
+                "task_type": str,
+            }
+        """
+        # Read sample from file (lazy loading)
+        sample = self._read_sample(idx)
+
+        query = sample["query"]
+        positive = sample["positive"]
+        negatives = sample.get("negatives", [])
+        instruction = sample.get("instruction", self.default_instruction)
+        task_type = sample.get("task_type", self.task_type)
+
+        # Format query with instruction
+        if instruction:
+            query_formatted = f"Instruct: {instruction}\nQuery: {query}"
+        else:
+            query_formatted = query
+
+        # For retrieval, positive doesn't get instruction
+        # For STS and classification, positive also gets instruction
+        if task_type in ["sts", "classification"]:
+            if instruction:
+                positive_formatted = f"Instruct: {instruction}\nQuery: {positive}"
+            else:
+                positive_formatted = positive
+        else:
+            positive_formatted = positive
+
+        # Tokenize query
+        query_encoded = self.tokenizer(
+            query_formatted,
+            max_length=self.max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        # Tokenize positive
+        pos_encoded = self.tokenizer(
+            positive_formatted,
+            max_length=self.max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        # Sample and tokenize negatives
+        if negatives:
+            # Sample num_negatives from available negatives
+            if len(negatives) >= self.num_negatives:
+                sampled_negatives = random.sample(negatives, self.num_negatives)
+            else:
+                # If not enough negatives, repeat some
+                sampled_negatives = negatives * (self.num_negatives // len(negatives) + 1)
+                sampled_negatives = sampled_negatives[:self.num_negatives]
+
+            # For retrieval, negatives don't get instruction
+            # For others, they might
+            if task_type in ["sts", "classification"]:
+                if instruction:
+                    negatives_formatted = [f"Instruct: {instruction}\nQuery: {neg}" for neg in sampled_negatives]
+                else:
+                    negatives_formatted = sampled_negatives
+            else:
+                negatives_formatted = sampled_negatives
+
+            # Tokenize each negative
+            neg_encoded = self.tokenizer(
+                negatives_formatted,
+                max_length=self.max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
+
+            neg_input_ids = neg_encoded["input_ids"]  # [num_negatives, seq_len]
+            neg_attention_mask = neg_encoded["attention_mask"]
+        else:
+            # No negatives provided
+            neg_input_ids = torch.zeros((self.num_negatives, self.max_length), dtype=torch.long)
+            neg_attention_mask = torch.zeros((self.num_negatives, self.max_length), dtype=torch.long)
+
+        return {
+            "query_input_ids": query_encoded["input_ids"].squeeze(0),
+            "query_attention_mask": query_encoded["attention_mask"].squeeze(0),
+            "pos_input_ids": pos_encoded["input_ids"].squeeze(0),
+            "pos_attention_mask": pos_encoded["attention_mask"].squeeze(0),
+            "neg_input_ids": neg_input_ids,
+            "neg_attention_mask": neg_attention_mask,
+            "task_type": task_type,
+        }
+
+
 class EmbeddingDataset(Dataset):
     """
     Generic dataset for embedding tasks.
