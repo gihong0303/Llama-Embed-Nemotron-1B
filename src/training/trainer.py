@@ -6,12 +6,14 @@ Implements training loop with:
 - Mixed precision training
 - Gradient accumulation
 - Logging and checkpointing
+- DistributedDataParallel (DDP) for multi-GPU training
 """
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import Optional, Dict
 import os
 from tqdm import tqdm
@@ -21,6 +23,16 @@ from pathlib import Path
 from ..models.embedding_model import InstructionAwareEmbeddingModel
 from .loss import InfoNCELoss, MultiTaskContrastiveLoss
 from .config import TrainingConfig
+from ..utils.distributed import (
+    is_distributed,
+    get_rank,
+    get_world_size,
+    get_local_rank,
+    is_main_process,
+    barrier,
+    reduce_dict,
+    print_memory_stats,
+)
 
 
 class EmbeddingTrainer:
@@ -46,9 +58,30 @@ class EmbeddingTrainer:
         self.eval_dataloader = eval_dataloader
         self.config = config or TrainingConfig()
 
-        # Device
-        self.device = torch.device(self.config.device if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
+        # Device setup
+        if is_distributed():
+            # In distributed mode, use local GPU
+            self.device = torch.device(f"cuda:{get_local_rank()}")
+            self.model.to(self.device)
+
+            # Wrap model in DDP
+            # find_unused_parameters=False is more efficient when all parameters are used
+            self.model = DDP(
+                self.model,
+                device_ids=[get_local_rank()],
+                output_device=get_local_rank(),
+                find_unused_parameters=False,  # More efficient, set to True if needed
+            )
+
+            if is_main_process():
+                print(f"Model wrapped in DistributedDataParallel")
+                print(f"  World size: {get_world_size()}")
+                print(f"  Rank: {get_rank()}")
+                print(f"  Device: {self.device}")
+        else:
+            # Single GPU or CPU
+            self.device = torch.device(self.config.device if torch.cuda.is_available() else "cpu")
+            self.model.to(self.device)
 
         # Loss function
         self.loss_fn = MultiTaskContrastiveLoss(
@@ -91,17 +124,24 @@ class EmbeddingTrainer:
         else:
             self.use_wandb = False
 
-        # Create output directory
-        os.makedirs(self.config.output_dir, exist_ok=True)
+        # Create output directory (only on main process)
+        if is_main_process():
+            os.makedirs(self.config.output_dir, exist_ok=True)
 
-        print(f"Trainer initialized")
-        print(f"  Device: {self.device}")
-        print(f"  Total training steps: {total_steps}")
-        print(f"  Batch size (per device): {self.config.batch_size}")
-        print(f"  Gradient accumulation steps: {self.config.gradient_accumulation_steps}")
-        print(f"  Learning rate: {self.config.learning_rate}")
-        print(f"  Temperature: {self.config.temperature}")
-        print(f"  Num negatives: {self.config.num_negatives}")
+        # Wait for directory creation
+        barrier()
+
+        if is_main_process():
+            print(f"Trainer initialized")
+            print(f"  Device: {self.device}")
+            print(f"  Total training steps: {total_steps}")
+            print(f"  Batch size (per device): {self.config.batch_size}")
+            if is_distributed():
+                print(f"  Effective batch size: {self.config.batch_size * get_world_size() * self.config.gradient_accumulation_steps}")
+            print(f"  Gradient accumulation steps: {self.config.gradient_accumulation_steps}")
+            print(f"  Learning rate: {self.config.learning_rate}")
+            print(f"  Temperature: {self.config.temperature}")
+            print(f"  Num negatives: {self.config.num_negatives}")
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
         """Create optimizer."""
@@ -160,37 +200,48 @@ class EmbeddingTrainer:
 
     def train(self):
         """Main training loop."""
-        print("\n" + "="*50)
-        print("Starting Training")
-        print("="*50 + "\n")
+        if is_main_process():
+            print("\n" + "="*50)
+            print("Starting Training")
+            print("="*50 + "\n")
 
         for epoch in range(self.config.num_epochs):
             self.epoch = epoch
-            print(f"\nEpoch {epoch + 1}/{self.config.num_epochs}")
+
+            if is_main_process():
+                print(f"\nEpoch {epoch + 1}/{self.config.num_epochs}")
+
+            # Set epoch for distributed sampler (important for shuffling)
+            if is_distributed() and hasattr(self.train_dataloader.sampler, 'set_epoch'):
+                self.train_dataloader.sampler.set_epoch(epoch)
 
             # Train one epoch
             train_loss = self.train_epoch()
 
-            print(f"Epoch {epoch + 1} - Average train loss: {train_loss:.4f}")
+            if is_main_process():
+                print(f"Epoch {epoch + 1} - Average train loss: {train_loss:.4f}")
 
             # Evaluate
             if self.eval_dataloader is not None:
                 eval_loss = self.evaluate()
-                print(f"Epoch {epoch + 1} - Eval loss: {eval_loss:.4f}")
 
-                # Save best model
+                if is_main_process():
+                    print(f"Epoch {epoch + 1} - Eval loss: {eval_loss:.4f}")
+
+                # Save best model (only on main process)
                 if eval_loss < self.best_loss:
                     self.best_loss = eval_loss
                     self.save_checkpoint("best_model")
 
-            # Save checkpoint
+            # Save checkpoint (only on main process)
             self.save_checkpoint(f"epoch_{epoch + 1}")
 
-        print("\n" + "="*50)
-        print("Training Complete!")
-        print("="*50 + "\n")
+        if is_main_process():
+            print("\n" + "="*50)
+            print("Training Complete!")
+            print("="*50 + "\n")
 
-        if self.use_wandb:
+        if self.use_wandb and is_main_process():
             import wandb
             wandb.finish()
 
@@ -201,7 +252,11 @@ class EmbeddingTrainer:
         total_loss = 0
         num_batches = 0
 
-        progress_bar = tqdm(self.train_dataloader, desc="Training")
+        # Progress bar only on main process
+        if is_main_process():
+            progress_bar = tqdm(self.train_dataloader, desc="Training")
+        else:
+            progress_bar = self.train_dataloader
 
         for batch_idx, batch in enumerate(progress_bar):
             loss = self.train_step(batch)
@@ -209,8 +264,9 @@ class EmbeddingTrainer:
             total_loss += loss
             num_batches += 1
 
-            # Update progress bar
-            progress_bar.set_postfix({"loss": f"{loss:.4f}", "avg_loss": f"{total_loss/num_batches:.4f}"})
+            # Update progress bar (only on main process)
+            if is_main_process() and hasattr(progress_bar, 'set_postfix'):
+                progress_bar.set_postfix({"loss": f"{loss:.4f}", "avg_loss": f"{total_loss/num_batches:.4f}"})
 
             # Logging
             if self.global_step % self.config.logging_steps == 0:
@@ -230,7 +286,16 @@ class EmbeddingTrainer:
                 self.log_metrics({"eval/loss": eval_loss})
                 self.model.train()  # Back to training mode
 
-        return total_loss / num_batches
+        # Average loss across all batches and all processes
+        avg_loss = total_loss / num_batches
+
+        if is_distributed():
+            # Reduce loss across all processes
+            loss_tensor = torch.tensor(avg_loss, device=self.device)
+            metrics = reduce_dict({"loss": loss_tensor}, average=True)
+            avg_loss = metrics["loss"]
+
+        return avg_loss
 
     def train_step(self, batch: Dict[str, torch.Tensor]) -> float:
         """Single training step."""
@@ -273,14 +338,25 @@ class EmbeddingTrainer:
             # Gradient accumulation
             loss = loss / self.config.gradient_accumulation_steps
 
-        # Backward pass
-        if self.config.fp16:
-            self.scaler.scale(loss).backward()
+        # Backward pass with DDP-aware gradient synchronization
+        should_sync = (self.global_step + 1) % self.config.gradient_accumulation_steps == 0
+
+        if is_distributed() and not should_sync:
+            # Don't synchronize gradients until accumulation is done
+            with self.model.no_sync():
+                if self.config.fp16:
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
         else:
-            loss.backward()
+            # Synchronize gradients (last step of accumulation or non-DDP)
+            if self.config.fp16:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
         # Optimizer step
-        if (self.global_step + 1) % self.config.gradient_accumulation_steps == 0:
+        if should_sync:
             if self.config.fp16:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
@@ -305,7 +381,13 @@ class EmbeddingTrainer:
         total_loss = 0
         num_batches = 0
 
-        for batch in tqdm(self.eval_dataloader, desc="Evaluating"):
+        # Progress bar only on main process
+        if is_main_process():
+            eval_iter = tqdm(self.eval_dataloader, desc="Evaluating")
+        else:
+            eval_iter = self.eval_dataloader
+
+        for batch in eval_iter:
             # Move to device
             query_input_ids = batch["query_input_ids"].to(self.device)
             query_attention_mask = batch["query_attention_mask"].to(self.device)
@@ -333,15 +415,31 @@ class EmbeddingTrainer:
             total_loss += loss.item()
             num_batches += 1
 
-        return total_loss / num_batches
+        # Average loss
+        avg_loss = total_loss / num_batches
+
+        if is_distributed():
+            # Reduce loss across all processes
+            loss_tensor = torch.tensor(avg_loss, device=self.device)
+            metrics = reduce_dict({"loss": loss_tensor}, average=True)
+            avg_loss = metrics["loss"]
+
+        return avg_loss
 
     def save_checkpoint(self, checkpoint_name: str):
-        """Save model checkpoint."""
+        """Save model checkpoint (only on rank 0)."""
+        # Only save on main process
+        if not is_main_process():
+            return
+
         checkpoint_dir = os.path.join(self.config.output_dir, checkpoint_name)
         os.makedirs(checkpoint_dir, exist_ok=True)
 
+        # Unwrap DDP model before saving
+        model_to_save = self.model.module if isinstance(self.model, DDP) else self.model
+
         # Save model
-        self.model.save_pretrained(checkpoint_dir)
+        model_to_save.save_pretrained(checkpoint_dir)
 
         # Save training state
         state = {
@@ -408,7 +506,11 @@ class EmbeddingTrainer:
             print(f"  Resuming from step {self.global_step}, epoch {self.epoch}")
 
     def log_metrics(self, metrics: Dict[str, float]):
-        """Log metrics."""
+        """Log metrics (only on rank 0)."""
+        # Only log on main process
+        if not is_main_process():
+            return
+
         # Console
         metrics_str = " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
         print(f"Step {self.global_step}: {metrics_str}")

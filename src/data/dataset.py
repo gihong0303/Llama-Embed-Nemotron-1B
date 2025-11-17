@@ -10,6 +10,7 @@ Supports multiple task types:
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from typing import List, Dict, Optional, Union, Tuple
 from transformers import PreTrainedTokenizer
 import json
@@ -391,24 +392,49 @@ def create_dataloader(
     batch_size: int = 32,
     shuffle: bool = True,
     num_workers: int = 0,
+    distributed: bool = False,
 ) -> DataLoader:
     """
-    Create DataLoader for training.
+    Create DataLoader for training with optional DistributedSampler.
 
     Args:
         dataset: Dataset
-        batch_size: Batch size
-        shuffle: Whether to shuffle
+        batch_size: Batch size per GPU
+        shuffle: Whether to shuffle (ignored if distributed=True)
         num_workers: Number of worker processes
+        distributed: Whether to use DistributedSampler for multi-GPU training
 
     Returns:
         DataLoader
+
+    Note:
+        When distributed=True, DistributedSampler will automatically shard
+        the dataset across all GPUs. Each GPU will see a different subset.
+        Call sampler.set_epoch(epoch) at the start of each epoch for proper shuffling.
     """
+    # Use DistributedSampler in distributed mode
+    if distributed:
+        import torch.distributed as dist
+
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=dist.get_world_size(),
+            rank=dist.get_rank(),
+            shuffle=shuffle,  # Shuffle within each epoch
+            drop_last=False,  # Don't drop last incomplete batch
+        )
+        # Don't use shuffle argument when using a sampler
+        shuffle = False
+    else:
+        sampler = None
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=True,
+        drop_last=False,  # Keep all samples
     )
