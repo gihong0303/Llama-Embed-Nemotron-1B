@@ -1,6 +1,6 @@
 # Llama-Embed-Nemotron-1B
 
-**A faithful implementation of the Llama-Embed-Nemotron methodology using Llama-3.2-1B**
+**An adaptation of the Llama-Embed-Nemotron methodology (arXiv:2511.07025) to Llama-3.2-1B.** Note: the original paper used Llama-3.1-8B; results at 1B scale are expected to be lower.
 
 This repository implements the training methodology described in the paper:
 > **Llama-Embed-Nemotron-8B: A Universal Text Embedding Model for Multilingual and Cross-Lingual Tasks**
@@ -9,17 +9,21 @@ This repository implements the training methodology described in the paper:
 
 The original paper achieved #1 on the MMTEB leaderboard using Llama-3.1-8B. This implementation adapts the methodology to Llama-3.2-1B for more accessible training and deployment.
 
+## Paper Fidelity
+
+[`VERIFICATION.md`](VERIFICATION.md) maps each section of the paper to the corresponding implementation, quoting the paper text alongside the code that implements it.
+
 ## Key Features
 
-- ✅ **Bi-directional Llama**: Converts causal decoder to bi-directional encoder by removing attention masks
-- ✅ **Instruction-Aware Embeddings**: Task-specific instructions guide embedding generation
-- ✅ **2-Stage Training**:
+- **Bi-directional Llama**: Converts causal decoder to bi-directional encoder by removing attention masks
+- **Instruction-Aware Embeddings**: Task-specific instructions guide embedding generation
+- **2-Stage Training**:
   - Stage 1: Retrieval pretraining (70% of data)
   - Stage 2: Multi-task fine-tuning (30% of data)
-- ✅ **InfoNCE Contrastive Loss**: With hard negative mining (no in-batch negatives)
-- ✅ **Synthetic Data Generation**: Multi-LLM pipeline for diverse training data
-- ✅ **Model Merging (Model Soup)**: Combine multiple checkpoints for better generalization
-- ✅ **MTEB Evaluation**: Compatible with MTEB benchmark
+- **InfoNCE Contrastive Loss**: With hard negative mining (no in-batch negatives)
+- **Synthetic Data Generation**: Multi-LLM pipeline for diverse training data
+- **Model Merging (Model Soup)**: Combine multiple checkpoints for better generalization
+- **MTEB Evaluation**: Compatible with MTEB benchmark
 
 ## Architecture
 
@@ -74,7 +78,7 @@ Examples:
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/Llama-Embed-Nemotron-1B.git
+git clone https://github.com/gihong0303/Llama-Embed-Nemotron-1B.git
 cd Llama-Embed-Nemotron-1B
 
 # Install dependencies
@@ -151,8 +155,8 @@ bash scripts/launch_ddp_stage1.sh \
     --gradient_checkpointing
 ```
 
-> 💡 **Note**: When using 8 GPUs, reduce `batch_size` per GPU to 16. Effective batch size = 16 × 8 = 128.
-> See [DDP_SETUP.md](DDP_SETUP.md) for detailed multi-GPU training guide.
+>  **Note**: When using 8 GPUs, reduce `batch_size` per GPU to 16. Effective batch size = 16 × 8 = 128.
+> Multi-GPU launch scripts: [`scripts/launch_ddp_stage1.sh`](scripts/launch_ddp_stage1.sh), [`scripts/launch_ddp_stage2.sh`](scripts/launch_ddp_stage2.sh).
 
 ### 5. Stage 2 Training
 
@@ -290,17 +294,17 @@ This implementation follows the paper as closely as possible:
 |-----------|-----------|-------------------------|-------|
 | Base Model | Llama-3.1-8B | Llama-3.2-1B | Scaled down |
 | Hidden Size | 4096 | 2048 | Proportional to model size |
-| Attention | Bi-directional | Bi-directional | ✓ Exact match |
-| Pooling | Mean pooling | Mean pooling | ✓ Exact match |
-| Loss | InfoNCE | InfoNCE | ✓ Exact match |
-| Temperature | 0.02 | 0.02 | ✓ Exact match |
-| Stage 1 Negatives | 1 | 1 | ✓ Exact match |
-| Stage 2 Negatives | 4 | 4 | ✓ Exact match |
-| Stage 1 LR | 1e-5 | 1e-5 | ✓ Exact match |
-| Stage 2 LR | 2e-6 | 2e-6 | ✓ Exact match |
+| Attention | Bi-directional | Bi-directional |  Exact match |
+| Pooling | Mean pooling | Mean pooling |  Exact match |
+| Loss | InfoNCE | InfoNCE |  Exact match |
+| Temperature | 0.02 | 0.02 |  Exact match |
+| Stage 1 Negatives | 1 | 1 |  Exact match |
+| Stage 2 Negatives | 4 | 4 |  Exact match |
+| Stage 1 LR | 1e-5 | 1e-5 |  Exact match |
+| Stage 2 LR | 2e-6 | 2e-6 |  Exact match |
 | Batch Size (8B) | 2048 → 128 | 256 → 128 | Scaled for resources |
-| Hard Neg Mining | 95% threshold | 95% threshold | ✓ Exact match |
-| Model Merging | Uniform averaging | Uniform averaging | ✓ Exact match |
+| Hard Neg Mining | 95% threshold | 95% threshold |  Exact match |
+| Model Merging | Uniform averaging | Uniform averaging |  Exact match |
 
 ### Key Differences from Paper
 
@@ -352,7 +356,7 @@ If you use this implementation, please cite both the original paper and this rep
 
 ## License
 
-This project is licensed under the MIT License. See LICENSE file for details.
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
 
 The base Llama models are subject to Meta's license terms.
 

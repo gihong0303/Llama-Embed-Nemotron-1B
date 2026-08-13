@@ -30,7 +30,7 @@ class BiDirectionalLlamaAttention(LlamaAttention):
             attn_weights = attn_weights + attention_mask
 ```
 
-✅ **VERIFIED**: Causal mask removed, bi-directional attention implemented
+**VERIFIED**: Causal mask removed, bi-directional attention implemented
 
 ---
 
@@ -45,7 +45,7 @@ for param in self.encoder.parameters():
     param.requires_grad = True
 ```
 
-✅ **VERIFIED**: All parameters trainable
+**VERIFIED**: All parameters trainable
 
 ---
 
@@ -63,7 +63,7 @@ def mean_pooling(self, hidden_states, attention_mask):
     return mean_embeddings
 ```
 
-✅ **VERIFIED**: Mean pooling with attention mask
+**VERIFIED**: Mean pooling with attention mask
 
 ---
 
@@ -86,7 +86,7 @@ def _format_texts_with_instruction(self, texts, instruction):
     return formatted
 ```
 
-✅ **VERIFIED**: Exact instruction format
+**VERIFIED**: Exact instruction format
 
 ---
 
@@ -116,7 +116,7 @@ class InfoNCELoss(nn.Module):
         loss = -log_prob[:, 0].mean()
 ```
 
-✅ **VERIFIED**: InfoNCE loss with temperature 0.02
+**VERIFIED**: InfoNCE loss with temperature 0.02
 
 ---
 
@@ -131,7 +131,7 @@ class InfoNCELoss(nn.Module):
         # Default: False (no in-batch negatives)
 ```
 
-✅ **VERIFIED**: No in-batch negatives (default=False)
+**VERIFIED**: No in-batch negatives (default=False)
 
 ---
 
@@ -141,34 +141,34 @@ class InfoNCELoss(nn.Module):
 
 | Parameter | Pretraining | Fine-tuning | Our Implementation |
 |-----------|-------------|-------------|-------------------|
-| Peak LR | 1e-5 | 2e-6 | ✅ Exact match |
-| Batch size | 2048 | 128 | ⚖️ Scaled to 256/128 |
-| Hard negatives | 1 | 4 | ✅ Exact match |
-| Temperature | 0.02 | 0.02 | ✅ Exact match |
-| Weight decay | 0.01 | 0.01 | ✅ Exact match |
-| Query max len | 512 | 512 | ✅ Exact match |
-| Doc max len | 512 | 512 | ✅ Exact match |
-| Optimizer | AdamW | AdamW | ✅ Exact match |
+| Peak LR | 1e-5 | 2e-6 | O Exact match |
+| Batch size | 2048 | 128 | Scaled to 256/128 |
+| Hard negatives | 1 | 4 | O Exact match |
+| Temperature | 0.02 | 0.02 | O Exact match |
+| Weight decay | 0.01 | 0.01 | O Exact match |
+| Query max len | 512 | 512 | O Exact match |
+| Doc max len | 512 | 512 | O Exact match |
+| Optimizer | AdamW | AdamW | O Exact match |
 
 #### Our Implementation:
 ```python
 # src/training/config.py:49-73
 @dataclass
 class Stage1Config(TrainingConfig):
-    learning_rate: float = 1e-5        # ✅ Matches paper
-    num_negatives: int = 1             # ✅ Matches paper
-    temperature: float = 0.02          # ✅ Matches paper
-    weight_decay: float = 0.01         # ✅ Matches paper
-    max_length: int = 512              # ✅ Matches paper
+    learning_rate: float = 1e-5        # Matches paper
+    num_negatives: int = 1             # Matches paper
+    temperature: float = 0.02          # Matches paper
+    weight_decay: float = 0.01         # Matches paper
+    max_length: int = 512              # Matches paper
 
 @dataclass
 class Stage2Config(TrainingConfig):
-    learning_rate: float = 2e-6        # ✅ Matches paper
-    num_negatives: int = 4             # ✅ Matches paper
-    temperature: float = 0.02          # ✅ Matches paper
+    learning_rate: float = 2e-6        # Matches paper
+    num_negatives: int = 4             # Matches paper
+    temperature: float = 0.02          # Matches paper
 ```
 
-✅ **VERIFIED**: All hyperparameters match exactly
+**VERIFIED**: All hyperparameters match exactly
 
 ---
 
@@ -194,7 +194,7 @@ def mine(self, queries, positives, corpus, similarity_threshold=0.95, ...):
                 continue  # Filter out
 ```
 
-✅ **VERIFIED**: 95% threshold for filtering
+**VERIFIED**: 95% threshold for filtering
 
 ---
 
@@ -215,7 +215,7 @@ class ModelMerger:
                 merged_param += param * weight  # Uniform: weight = 1/N
 ```
 
-✅ **VERIFIED**: Uniform averaging (default strategy)
+**VERIFIED**: Uniform averaging (default strategy)
 
 ---
 
@@ -230,9 +230,9 @@ class ModelMerger:
 > "Fine-tuning: 4.3M samples (30%)"
 
 #### Our Implementation:
-- ✅ Supports arbitrary data scale (no hardcoded limits)
-- ✅ JSONL format for streaming large datasets
-- ✅ Multi-file support for splitting data
+- Supports arbitrary data scale (no hardcoded limits)
+- JSONL format for streaming large datasets
+- Multi-file support for splitting data
 
 **Note**: Actual data preparation is user-provided (we provide tools)
 
@@ -259,13 +259,13 @@ class MultiLLMSyntheticGenerator:
             # Generate subset...
 ```
 
-✅ **VERIFIED**: Multi-LLM support with distribution
+**VERIFIED**: Multi-LLM support with distribution
 
 ---
 
 ## Summary
 
-### ✅ Exact Matches (Critical Components)
+### Exact Matches (Critical Components)
 
 1. **Architecture**: Bi-directional attention (causal mask removed)
 2. **Pooling**: Mean pooling with attention mask
@@ -277,13 +277,13 @@ class MultiLLMSyntheticGenerator:
 8. **Instruction format**: "Instruct: ...\nQuery: ..."
 9. **No in-batch negatives**: Default False
 
-### ⚖️ Scaled for Resources
+### Scaled for Resources
 
 1. **Model size**: 8B → 1B (proportional scaling)
 2. **Batch size**: 2048/128 → 256/128 (scaled for consumer GPUs)
 3. **Data scale**: 16.1M → User-provided (tools support any scale)
 
-### 📊 Implementation Quality
+### Implementation Quality
 
 | Aspect | Score | Notes |
 |--------|-------|-------|
