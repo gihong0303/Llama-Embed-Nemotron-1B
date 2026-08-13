@@ -263,5 +263,3 @@ if __name__ == "__main__":
     print(f"Merged model saved to {output_path}")
 
     # Alternative: Weighted merging
-    # eval_losses = [0.45, 0.48, 0.44, 0.47, 0.46, 0.43]  # Example losses
-    # merged_model = merge_models_weighted(model_paths, eval_losses, output_path)
